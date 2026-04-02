@@ -1,0 +1,21 @@
+{
+  "name": "gaze",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "extension",
+    "mcp",
+    "host"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:mcp": "npm run dev -w mcp",
+    "dev:host": "npm run dev -w host",
+    "dev:extension": "npm run dev -w extension"
+  },
+  "overrides": {
+    "@crxjs/vite-plugin": {
+      "rollup": "^2.80.0"
+    }
+  }
+}
