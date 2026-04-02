@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Gaze",
+  "version": "0.1.0",
+  "description": "AI-powered browser security analysis from inside the JS runtime",
+  "permissions": [
+    "debugger",
+    "storage",
+    "tabs",
+    "activeTab",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "devtools_page": "src/devtools/devtools.html",
+  "icons": {
+    "16": "public/icons/icon16.png",
+    "48": "public/icons/icon48.png",
+    "128": "public/icons/icon128.png"
+  }
+}
