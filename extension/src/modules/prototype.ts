@@ -1,7 +1,6 @@
 import type { PrototypeData } from "../shared/types";
 import type { CdpBridge } from "../background/cdp-bridge";
 
-// Spec-defined keys for each prototype
 const OBJECT_PROTO_SPEC = new Set([
   "constructor","hasOwnProperty","isPrototypeOf","propertyIsEnumerable",
   "toString","toLocaleString","valueOf","__defineGetter__","__defineSetter__",
@@ -18,31 +17,60 @@ const ARRAY_PROTO_SPEC = new Set([
 ]);
 
 const FUNCTION_PROTO_SPEC = new Set([
-  "apply","bind","call","constructor","toString","length","name","arguments","caller",
+  "apply","bind","call","constructor","toString","length","name",
 ]);
 
 export async function observePrototype(bridge: CdpBridge, _url: string): Promise<PrototypeData> {
   const [objectProto, arrayProto, functionProto] = await Promise.all([
     bridge.evaluate<PrototypeData["objectProto"]>(`
-      Object.getOwnPropertyNames(Object.prototype).map(k => ({
-        key: k,
-        type: typeof Object.prototype[k],
-        enumerable: Object.getOwnPropertyDescriptor(Object.prototype, k)?.enumerable ?? false,
-      }))
+      (() => {
+        try {
+          return Object.getOwnPropertyNames(Object.prototype).map(k => {
+            try {
+              const desc = Object.getOwnPropertyDescriptor(Object.prototype, k);
+              return {
+                key: k,
+                type: typeof Object.prototype[k],
+                enumerable: desc ? desc.enumerable : false,
+              };
+            } catch { return { key: k, type: 'unknown', enumerable: false }; }
+          });
+        } catch { return []; }
+      })()
     `),
     bridge.evaluate<PrototypeData["arrayProto"]>(`
-      Object.getOwnPropertyNames(Array.prototype).map(k => ({
-        key: k,
-        type: typeof Array.prototype[k],
-        enumerable: Object.getOwnPropertyDescriptor(Array.prototype, k)?.enumerable ?? false,
-      }))
+      (() => {
+        try {
+          return Object.getOwnPropertyNames(Array.prototype).map(k => {
+            try {
+              const desc = Object.getOwnPropertyDescriptor(Array.prototype, k);
+              return {
+                key: k,
+                type: typeof Array.prototype[k],
+                enumerable: desc ? desc.enumerable : false,
+              };
+            } catch { return { key: k, type: 'unknown', enumerable: false }; }
+          });
+        } catch { return []; }
+      })()
     `),
     bridge.evaluate<PrototypeData["functionProto"]>(`
-      Object.getOwnPropertyNames(Function.prototype).map(k => ({
-        key: k,
-        type: typeof Function.prototype[k],
-        enumerable: Object.getOwnPropertyDescriptor(Function.prototype, k)?.enumerable ?? false,
-      }))
+      (() => {
+        try {
+          return Object.getOwnPropertyNames(Function.prototype)
+            .filter(k => k !== 'caller' && k !== 'callee' && k !== 'arguments')
+            .map(k => {
+              try {
+                const desc = Object.getOwnPropertyDescriptor(Function.prototype, k);
+                return {
+                  key: k,
+                  type: typeof Function.prototype[k],
+                  enumerable: desc ? desc.enumerable : false,
+                };
+              } catch { return { key: k, type: 'unknown', enumerable: false }; }
+            });
+        } catch { return []; }
+      })()
     `),
   ]);
 

@@ -10,7 +10,12 @@ export type ModuleId =
   | "memory"
   | "prototype"
   | "csp"
-  | "fingerprint";
+  | "fingerprint"
+  | "api"
+  | "js_analysis"
+  | "events"
+  | "auth"
+  | "state";
 
 // ─── Observation Data Shapes ──────────────────────────────────────────────────
 
@@ -45,16 +50,8 @@ export interface DomData {
       value?: string;
     }>;
   }>;
-  iframes: Array<{
-    src: string;
-    sandbox: string | null;
-    allow: string | null;
-  }>;
-  inlineHandlers: Array<{
-    element: string;
-    event: string;
-    code: string;
-  }>;
+  iframes: Array<{ src: string; sandbox: string | null; allow: string | null }>;
+  inlineHandlers: Array<{ element: string; event: string; code: string }>;
   scripts: Array<{
     src: string | null;
     inline: boolean;
@@ -69,11 +66,7 @@ export interface DomData {
 export interface ScriptsData {
   windowProperties: Array<{ key: string; type: string; preview: string }>;
   sourceMaps: string[];
-  serviceWorkers: Array<{
-    scriptUrl: string;
-    scope: string;
-    state: string;
-  }>;
+  serviceWorkers: Array<{ scriptUrl: string; scope: string; state: string }>;
   evalUsage: boolean;
   postMessageHandlers: number;
 }
@@ -95,11 +88,7 @@ export interface StorageData {
   cookies: CookieEntry[];
   localStorage: Array<{ key: string; value: string; size: number }>;
   sessionStorage: Array<{ key: string; value: string; size: number }>;
-  indexedDB: Array<{
-    name: string;
-    version: number;
-    objectStores: string[];
-  }>;
+  indexedDB: Array<{ name: string; version: number; objectStores: string[] }>;
   cacheStorage: Array<{ name: string; urls: string[] }>;
 }
 
@@ -123,11 +112,7 @@ export interface NetworkData {
 
 export interface MemoryData {
   strings: Array<{ value: string; length: number; occurrences: number }>;
-  summary: {
-    totalNodes: number;
-    totalSize: number;
-    stringCount: number;
-  };
+  summary: { totalNodes: number; totalSize: number; stringCount: number };
 }
 
 export interface PrototypeData {
@@ -153,6 +138,91 @@ export interface FingerprintData {
   htmlSignatures: string[];
 }
 
+// ─── Business Logic Data Shapes ───────────────────────────────────────────────
+
+export interface ApiRequest {
+  requestId: string;
+  url: string;
+  method: string;
+  resourceType: string;
+  requestHeaders: Array<{ name: string; value: string }>;
+  requestBody: string | null;
+  responseStatus: number;
+  responseHeaders: Array<{ name: string; value: string }>;
+  responseBody: string | null;
+  timing: number;
+  initiator: string;
+}
+
+export interface ApiData {
+  requests: ApiRequest[];
+  duration: number;
+}
+
+export interface JsScript {
+  scriptId: string;
+  url: string;
+  source: string;
+  size: number;
+}
+
+export interface JsAnalysisData {
+  scripts: JsScript[];
+  apiEndpoints: string[];
+  dangerousSinks: Array<{ type: string; context: string; scriptUrl: string }>;
+  authPatterns: Array<{ type: string; context: string; scriptUrl: string }>;
+  roleChecks: Array<{ context: string; scriptUrl: string }>;
+  hardcodedStrings: Array<{ value: string; scriptUrl: string }>;
+}
+
+export interface EventEntry {
+  type: string;
+  target: string;
+  listenerSource: string;
+}
+
+export interface EventsData {
+  domEvents: EventEntry[];
+  customEvents: string[];
+  postMessageOrigins: string[];
+  formSubmitHandlers: Array<{
+    formId: string;
+    action: string;
+    handler: string;
+  }>;
+}
+
+export interface AuthRequest {
+  url: string;
+  method: string;
+  requestHeaders: Array<{ name: string; value: string }>;
+  requestBody: string | null;
+  responseStatus: number;
+  responseHeaders: Array<{ name: string; value: string }>;
+  responseBody: string | null;
+  tokens: string[];
+}
+
+export interface AuthData {
+  requests: AuthRequest[];
+  storedTokens: Array<{ location: string; key: string; value: string }>;
+  sessionIndicators: string[];
+}
+
+export interface StateSnapshot {
+  timestamp: number;
+  url: string;
+  stores: Record<string, unknown>;
+  localStorageKeys: string[];
+  sessionStorageKeys: string[];
+}
+
+export interface StateData {
+  initial: StateSnapshot;
+  dispatches: Array<{ timestamp: number; action: string; payload: string }>;
+  urlChanges: Array<{ timestamp: number; from: string; to: string }>;
+}
+
 export type ModuleData =
   | UrlData
   | HeadersData
@@ -163,7 +233,12 @@ export type ModuleData =
   | MemoryData
   | PrototypeData
   | CspData
-  | FingerprintData;
+  | FingerprintData
+  | ApiData
+  | JsAnalysisData
+  | EventsData
+  | AuthData
+  | StateData;
 
 export interface Observation {
   module: ModuleId;

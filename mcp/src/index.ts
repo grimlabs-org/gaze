@@ -72,13 +72,17 @@ async function observe(
   }
 
   if (response.type === "OBSERVE_RESULT") {
-    return JSON.stringify(response.observation.data, null, 2);
+    const json = JSON.stringify(response.observation.data, null, 2);
+    // Truncate if too large
+    return json.length > 800_000 ? json.slice(0, 800_000) + "\n...[truncated]" : json;
   }
 
   return `Unexpected response: ${response.type}`;
 }
 
-const server = new McpServer({ name: "gaze", version: "0.2.0" });
+const server = new McpServer({ name: "gaze", version: "0.3.0" });
+
+// ── Meta tools ────────────────────────────────────────────────────────────────
 
 server.tool("ping", "Check if Gaze host is running.", {}, async () => {
   try {
@@ -101,43 +105,96 @@ server.tool("get_active_tab", "Get the currently active Chrome tab ID and URL.",
   }
 });
 
+// ── Base params ───────────────────────────────────────────────────────────────
+
 const tabUrlParams = {
   tabId: z.number().describe("Chrome tab ID"),
   url: z.string().describe("URL of the page"),
 };
 
-server.tool("observe_url", "Observe the URL structure — protocol, hostname, path, query parameters, fragment.", tabUrlParams,
+const tabUrlDurationParams = {
+  ...tabUrlParams,
+  durationMs: z.number().optional().describe("Observation window in ms. Default 10000."),
+};
+
+// ── Structural observation tools ──────────────────────────────────────────────
+
+server.tool("observe_url", "Observe URL structure — protocol, hostname, path, params, fragment.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "url") }] }));
 
-server.tool("observe_headers", "Observe HTTP request and response headers — security headers, CORS, server disclosure.", tabUrlParams,
+server.tool("observe_headers", "Observe HTTP request/response headers — security headers, CORS, server disclosure.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "headers") }] }));
 
-server.tool("observe_dom", "Observe the DOM — forms, iframes, inline handlers, script tags, HTML comments, meta tags.", tabUrlParams,
+server.tool("observe_dom", "Observe DOM — forms, iframes, inline handlers, script tags, HTML comments, meta tags.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "dom") }] }));
 
-server.tool("observe_scripts", "Observe the JS runtime — non-native window properties, source maps, service workers, eval usage.", tabUrlParams,
+server.tool("observe_scripts", "Observe JS runtime — non-native window properties, source maps, service workers, eval usage.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "scripts") }] }));
 
-server.tool("observe_storage", "Observe all storage — cookies (domain-scoped), localStorage, sessionStorage, IndexedDB, Cache API.", tabUrlParams,
+server.tool("observe_storage", "Observe storage — cookies (domain-scoped), localStorage, sessionStorage, IndexedDB, Cache API.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "storage") }] }));
 
-server.tool("observe_network", "Observe network requests over a time window.",
-  { ...tabUrlParams, durationMs: z.number().optional().describe("Observation window in ms. Default 5000.") },
+server.tool("observe_network", "Observe network requests over a time window — URLs, methods, headers, status codes.", tabUrlDurationParams,
   async ({ tabId, url, durationMs }) => ({
     content: [{ type: "text", text: await observe(tabId, url, "network", durationMs !== undefined ? { durationMs } : undefined) }]
   }));
 
-server.tool("observe_memory", "Observe the JS heap — string values present in memory. Use selectively.", tabUrlParams,
+server.tool("observe_memory", "Observe memory — JS heap metrics and strings from framework state stores.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "memory") }] }));
 
-server.tool("observe_prototype", "Observe prototype chains — Object.prototype, Array.prototype, Function.prototype and non-spec additions.", tabUrlParams,
+server.tool("observe_prototype", "Observe prototype chains — Object/Array/Function.prototype and non-spec additions.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "prototype") }] }));
 
 server.tool("observe_csp", "Observe Content Security Policy — raw header, parsed directives, report endpoints.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "csp") }] }));
 
-server.tool("observe_fingerprint", "Observe framework and library signals — JS globals, script URLs, HTML signatures, meta tags.", tabUrlParams,
+server.tool("observe_fingerprint", "Observe framework/library signals — JS globals, script URLs, HTML signatures, meta tags.", tabUrlParams,
   async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "fingerprint") }] }));
+
+// ── Business logic observation tools ─────────────────────────────────────────
+
+server.tool(
+  "observe_api",
+  "Observe API calls (XHR/Fetch) made by the page — URLs, methods, request/response bodies, auth headers. Captures over a time window.",
+  tabUrlDurationParams,
+  async ({ tabId, url, durationMs }) => ({
+    content: [{ type: "text", text: await observe(tabId, url, "api", durationMs !== undefined ? { durationMs } : undefined) }]
+  })
+);
+
+server.tool(
+  "observe_js_analysis",
+  "Analyse loaded JavaScript — extract API endpoints, detect dangerous sinks (eval/innerHTML), auth patterns, role/permission checks, and hardcoded credentials.",
+  tabUrlDurationParams,
+  async ({ tabId, url, durationMs }) => ({
+    content: [{ type: "text", text: await observe(tabId, url, "js_analysis", durationMs !== undefined ? { durationMs } : undefined) }]
+  })
+);
+
+server.tool(
+  "observe_events",
+  "Observe DOM event handlers, custom events, postMessage origin checks, and form submit handlers.",
+  tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "events") }] })
+);
+
+server.tool(
+  "observe_auth",
+  "Observe authentication flows — intercepts auth-related requests (login, token, session), extracts tokens from responses, checks storage for stored credentials.",
+  tabUrlDurationParams,
+  async ({ tabId, url, durationMs }) => ({
+    content: [{ type: "text", text: await observe(tabId, url, "auth", durationMs !== undefined ? { durationMs } : undefined) }]
+  })
+);
+
+server.tool(
+  "observe_state",
+  "Observe client-side state — captures initial state from Redux/Vuex/Next/Nuxt stores, monitors Redux dispatches and URL changes during observation window.",
+  tabUrlDurationParams,
+  async ({ tabId, url, durationMs }) => ({
+    content: [{ type: "text", text: await observe(tabId, url, "state", durationMs !== undefined ? { durationMs } : undefined) }]
+  })
+);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

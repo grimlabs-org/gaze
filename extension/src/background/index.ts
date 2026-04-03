@@ -9,6 +9,11 @@ import { observeMemory } from "../modules/memory";
 import { observePrototype } from "../modules/prototype";
 import { observeCsp } from "../modules/csp";
 import { observeFingerprint } from "../modules/fingerprint";
+import { observeApi } from "../modules/api";
+import { observeJsAnalysis } from "../modules/js_analysis";
+import { observeEvents } from "../modules/events";
+import { observeAuth } from "../modules/auth";
+import { observeState } from "../modules/state";
 import type {
   HostMessage,
   ModuleId,
@@ -40,8 +45,6 @@ function connect(): void {
 function sendToHost(message: HostMessage): void {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message));
-  } else {
-    console.warn("[SW] Cannot send — not connected");
   }
 }
 
@@ -96,12 +99,7 @@ async function handleObserveRequest(message: ObserveRequestMessage): Promise<voi
   try {
     await bridge.attach();
     const data = await runModule(module, bridge, url, message.options);
-    const observation: Observation = {
-      module,
-      collectedAt: Date.now(),
-      url,
-      data,
-    };
+    const observation: Observation = { module, collectedAt: Date.now(), url, data };
     sendToHost({ type: "OBSERVE_RESULT", id, observation });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -119,17 +117,22 @@ async function runModule(
   options?: Record<string, unknown>
 ) {
   switch (module) {
-    case "url":         return observeUrl(url);
-    case "headers":     return observeHeaders(bridge, url);
-    case "dom":         return observeDom(bridge, url);
-    case "scripts":     return observeScripts(bridge, url);
-    case "storage":     return observeStorage(bridge, url);
-    case "network":     return observeNetwork(bridge, url, options);
-    case "memory":      return observeMemory(bridge, url);
-    case "prototype":   return observePrototype(bridge, url);
-    case "csp":         return observeCsp(bridge, url);
-    case "fingerprint": return observeFingerprint(bridge, url);
-    default:            throw new Error(`Unknown module: ${module}`);
+    case "url":          return observeUrl(url);
+    case "headers":      return observeHeaders(bridge, url);
+    case "dom":          return observeDom(bridge, url);
+    case "scripts":      return observeScripts(bridge, url);
+    case "storage":      return observeStorage(bridge, url);
+    case "network":      return observeNetwork(bridge, url, options);
+    case "memory":       return observeMemory(bridge, url);
+    case "prototype":    return observePrototype(bridge, url);
+    case "csp":          return observeCsp(bridge, url);
+    case "fingerprint":  return observeFingerprint(bridge, url);
+    case "api":          return observeApi(bridge, url, options);
+    case "js_analysis":  return observeJsAnalysis(bridge, url, options);
+    case "events":       return observeEvents(bridge, url);
+    case "auth":         return observeAuth(bridge, url, options);
+    case "state":        return observeState(bridge, url, options);
+    default:             throw new Error(`Unknown module: ${module}`);
   }
 }
 
