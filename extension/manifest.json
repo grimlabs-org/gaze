@@ -7,17 +7,16 @@
     "debugger",
     "storage",
     "tabs",
-    "activeTab",
-    "nativeMessaging"
+    "activeTab"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "src/background/index.ts",
+    "service_worker": "background.js",
     "type": "module"
   },
-  "devtools_page": "src/devtools/devtools.html",
+  "devtools_page": "devtools/devtools.html",
   "icons": {
     "16": "public/icons/icon16.png",
     "48": "public/icons/icon48.png",

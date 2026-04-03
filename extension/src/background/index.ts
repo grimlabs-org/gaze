@@ -1,43 +1,128 @@
 /**
  * Service Worker Entry Point
- * Coordinates the CDP bridge, native bridge, and scan lifecycle.
+ * Static imports only — no dynamic imports to avoid Vite's
+ * modulepreload polyfill which uses window.dispatchEvent.
  */
 
 import { CdpBridge } from "./cdp-bridge";
-import { NativeBridge } from "./native-bridge";
-import type {
-  HostMessage,
-  ModuleId,
-  ScanRequestMessage,
-} from "../shared/types";
+import { runStorageAudit } from "../modules/storage";
+import { runDomScan } from "../modules/dom";
+import { runNetworkScan } from "../modules/network";
+import { runFingerprint } from "../modules/fingerprint";
+import { runPrototypeScan } from "../modules/prototype";
+import { runMemoryScan } from "../modules/memory";
+import type { HostMessage, ModuleId, ScanRequestMessage } from "../shared/types";
 
-// State
-const native = new NativeBridge();
+// ─── State ───────────────────────────────────────────────────────────────────
+
 const bridges = new Map<number, CdpBridge>();
+const WS_URL = "ws://localhost:9876";
+let ws: WebSocket | null = null;
+let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
 
-// Native Messaging
-native.connect();
+// ─── WebSocket Connection ─────────────────────────────────────────────────────
 
-native.onMessage(async (message: HostMessage) => {
+function connect(): void {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    console.log("[SW] Connected to host");
+    startKeepAlive();
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data) as HostMessage;
+      void handleHostMessage(message);
+    } catch (err) {
+      console.error("[SW] WS parse error:", err);
+    }
+  };
+
+  ws.onclose = () => {
+    console.log("[SW] Disconnected from host — retrying in 3s");
+    stopKeepAlive();
+    ws = null;
+    setTimeout(connect, 3000);
+  };
+
+  ws.onerror = () => {};
+}
+
+function sendToHost(message: HostMessage): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(message));
+  } else {
+    console.warn("[SW] Cannot send to host — not connected");
+  }
+}
+
+// ─── Keepalive ────────────────────────────────────────────────────────────────
+
+function startKeepAlive(): void {
+  stopKeepAlive();
+  keepAliveInterval = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "KEEPALIVE" }));
+    }
+  }, 20_000);
+}
+
+function stopKeepAlive(): void {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+}
+
+// ─── Message Handler ──────────────────────────────────────────────────────────
+
+async function handleHostMessage(message: HostMessage): Promise<void> {
   switch (message.type) {
     case "PING":
-      native.send({ type: "PONG", id: message.id });
+      sendToHost({ type: "PONG", id: message.id });
       break;
-
+    case "GET_ACTIVE_TAB":
+      await handleGetActiveTab(message.id);
+      break;
     case "SCAN_REQUEST":
       await handleScanRequest(message);
       break;
-
     default:
-      console.warn("[SW] Unhandled message type:", message.type);
+      console.warn("[SW] Unhandled message:", (message as HostMessage).type);
   }
-});
+}
 
-// Scan Handler
+// ─── Active Tab ───────────────────────────────────────────────────────────────
+
+async function handleGetActiveTab(id: string): Promise<void> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id || !tab.url) {
+      sendToHost({ type: "ACTIVE_TAB_ERROR", id, error: "No active tab found" });
+      return;
+    }
+    sendToHost({
+      type: "ACTIVE_TAB_RESULT",
+      id,
+      tabId: tab.id,
+      url: tab.url,
+      title: tab.title ?? "",
+    });
+  } catch (err) {
+    sendToHost({
+      type: "ACTIVE_TAB_ERROR",
+      id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// ─── Scan Handler ─────────────────────────────────────────────────────────────
+
 async function handleScanRequest(message: ScanRequestMessage): Promise<void> {
   const { id, tabId, url, modules } = message;
 
-  // Get or create bridge for this tab
   if (!bridges.has(tabId)) {
     bridges.set(tabId, new CdpBridge(tabId));
   }
@@ -46,88 +131,57 @@ async function handleScanRequest(message: ScanRequestMessage): Promise<void> {
   try {
     await bridge.attach();
 
-    // Run requested modules sequentially
-    // Modules will be imported and wired in as they are built
     const allFindings = [];
     const start = Date.now();
 
     for (const moduleId of modules) {
       try {
         const findings = await runModule(moduleId, bridge, url);
-
-        native.send({
-          type: "MODULE_RESULT",
-          id,
-          moduleId,
-          findings,
-        });
-
+        sendToHost({ type: "MODULE_RESULT", id, moduleId, findings });
         allFindings.push(...findings);
       } catch (err) {
         console.error(`[SW] Module ${moduleId} failed:`, err);
       }
     }
 
-    native.send({
+    sendToHost({
       type: "SCAN_RESULT",
       id,
       findings: allFindings,
       duration: Date.now() - start,
     });
+
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    native.send({ type: "SCAN_ERROR", id, error });
+    sendToHost({ type: "SCAN_ERROR", id, error });
   } finally {
     await bridge.detach().catch(() => {});
     bridges.delete(tabId);
   }
 }
 
-// Module Runner
-async function runModule(
-  moduleId: ModuleId,
-  bridge: CdpBridge,
-  url: string
-) {
+// ─── Module Runner ────────────────────────────────────────────────────────────
+
+async function runModule(moduleId: ModuleId, bridge: CdpBridge, url: string) {
   switch (moduleId) {
-    case "storage": {
-      const { runStorageAudit } = await import("../modules/storage");
-      return runStorageAudit(bridge, url);
-    }
-    case "dom": {
-      const { runDomScan } = await import("../modules/dom");
-      return runDomScan(bridge, url);
-    }
-    case "network": {
-      const { runNetworkScan } = await import("../modules/network");
-      return runNetworkScan(bridge, url);
-    }
-    case "fingerprint": {
-      const { runFingerprint } = await import("../modules/fingerprint");
-      return runFingerprint(bridge, url);
-    }
-    case "prototype": {
-      const { runPrototypeScan } = await import("../modules/prototype");
-      return runPrototypeScan(bridge, url);
-    }
-    case "memory": {
-      const { runMemoryScan } = await import("../modules/memory");
-      return runMemoryScan(bridge, url);
-    }
-    default:
-      return [];
+    case "storage":   return runStorageAudit(bridge, url);
+    case "dom":       return runDomScan(bridge, url);
+    case "network":   return runNetworkScan(bridge, url);
+    case "fingerprint": return runFingerprint(bridge, url);
+    case "prototype": return runPrototypeScan(bridge, url);
+    case "memory":    return runMemoryScan(bridge, url);
+    default:          return [];
   }
 }
 
-// Debugger Cleanup
+// ─── Debugger Cleanup ─────────────────────────────────────────────────────────
+
 chrome.debugger.onDetach.addListener(({ tabId }) => {
   if (!tabId) return;
   bridges.delete(tabId);
 });
 
-// Keep Alive 
+// ─── Startup ──────────────────────────────────────────────────────────────────
 
-// Native messaging port keeps the service worker alive
-// while a scan is in progress
-
-console.log("[Gaze] Service worker started");
+connect();
+console.log("[SW] Service worker started");

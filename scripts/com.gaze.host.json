@@ -1,0 +1,7 @@
+{
+  "name": "com.gaze.host",
+  "description": "Gaze native messaging host",
+  "path": "",
+  "type": "stdio",
+  "allowed_origins": []
+}

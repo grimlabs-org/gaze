@@ -3,16 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build"
+    "dev": "vite build --watch",
+    "build": "tsc --noEmit && vite build"
   },
   "devDependencies": {
-    "@crxjs/vite-plugin": "2.4.0",
     "@types/chrome": "^0.0.270",
     "typescript": "^5.4.5",
     "vite": "^7.0.0"
-  },
-  "overrides": {
-    "rollup": "^2.80.0"
   }
 }
