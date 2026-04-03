@@ -1,12 +1,10 @@
 import type { AuthData, AuthRequest } from "../shared/types";
 import type { CdpBridge } from "../background/cdp-bridge";
 
-// URL patterns that suggest auth-related endpoints
 const AUTH_URL_PATTERNS = [
   /\/(login|logout|signin|signout|auth|oauth|token|refresh|session|register|password|2fa|mfa|verify)/i,
   /\/(api|v\d+)\/(user|account|me|profile|identity)/i,
 ];
-
 
 const TOKEN_RESPONSE_PATTERNS = [
   /["']?(access_token|refresh_token|id_token|token|jwt|session_id|sessionid)["']?\s*[:=]\s*["']([^"']{10,})["']/gi,
@@ -33,11 +31,11 @@ export async function observeAuth(
   _url: string,
   options?: Record<string, unknown>
 ): Promise<AuthData> {
-  const durationMs = (options?.durationMs as number) ?? 10_000;
   const requests: AuthRequest[] = [];
   const pending = new Map<string, Partial<AuthRequest>>();
 
   await bridge.enableNetwork();
+  await bridge.send("Page.enable");
 
   const off = bridge.onEvent((method, params) => {
     const p = params as Record<string, unknown>;
@@ -47,14 +45,11 @@ export async function observeAuth(
       const url = req.url as string;
       if (!isAuthUrl(url)) return;
 
-      const requestHeaders = Object.entries(
-        (req.headers as Record<string, string>) ?? {}
-      ).map(([name, value]) => ({ name, value }));
-
       pending.set(p.requestId as string, {
         url,
         method: req.method as string,
-        requestHeaders,
+        requestHeaders: Object.entries((req.headers as Record<string, string>) ?? {})
+          .map(([name, value]) => ({ name, value })),
         requestBody: (req.postData as string) ?? null,
         responseStatus: 0,
         responseHeaders: [],
@@ -69,13 +64,11 @@ export async function observeAuth(
       if (!entry) return;
 
       entry.responseStatus = res.status as number;
-      entry.responseHeaders = Object.entries(
-        (res.headers as Record<string, string>) ?? {}
-      ).map(([name, value]) => ({ name, value }));
+      entry.responseHeaders = Object.entries((res.headers as Record<string, string>) ?? {})
+        .map(([name, value]) => ({ name, value }));
 
       bridge.send<{ body: string; base64Encoded: boolean }>(
-        "Network.getResponseBody",
-        { requestId: p.requestId as string }
+        "Network.getResponseBody", { requestId: p.requestId as string }
       ).then(({ body, base64Encoded }) => {
         if (entry) {
           const decoded = base64Encoded ? atob(body) : body;
@@ -91,20 +84,28 @@ export async function observeAuth(
         setTimeout(() => {
           requests.push(entry as AuthRequest);
           pending.delete(p.requestId as string);
-        }, 500);
+        }, 300);
       }
     }
   });
 
-  await new Promise(resolve => setTimeout(resolve, durationMs));
+  // Reload to capture auth requests from page start
+  await new Promise<void>((resolve) => {
+    const offLoad = bridge.onEvent((method) => {
+      if (method === "Page.loadEventFired") { offLoad(); resolve(); }
+    });
+    bridge.send("Page.reload", { ignoreCache: false }).catch(() => resolve());
+    setTimeout(resolve, 15_000);
+  });
+
+  const extraWait = (options?.extraWaitMs as number) ?? 3_000;
+  await new Promise(resolve => setTimeout(resolve, extraWait));
   off();
 
-  // Check stored tokens
   const storedTokens = await bridge.evaluate<AuthData["storedTokens"]>(`
     (() => {
       const tokens = [];
       const tokenKeys = ['token','access_token','refresh_token','id_token','jwt','session','auth'];
-
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key && tokenKeys.some(k => key.toLowerCase().includes(k))) {
@@ -127,8 +128,8 @@ export async function observeAuth(
       if (document.cookie) indicators.push('cookies present');
       if (localStorage.length > 0) indicators.push('localStorage has ' + localStorage.length + ' keys');
       if (sessionStorage.length > 0) indicators.push('sessionStorage has ' + sessionStorage.length + ' keys');
-      if (window.__user || window.currentUser || window.user) indicators.push('window.user object present');
-      if (window.__AUTH__ || window.__auth__) indicators.push('window.__AUTH__ present');
+      try { if (window.__user || window.currentUser || window.user) indicators.push('window.user object present'); } catch(e) {}
+      try { if (window.__AUTH__ || window.__auth__) indicators.push('window.__AUTH__ present'); } catch(e) {}
       return indicators;
     })()
   `);
