@@ -7,7 +7,7 @@
     "lib": ["ES2022"],
     "outDir": "dist",
     "rootDir": "..",
-    "baseUrl": ".."
+    // "baseUrl": ".."
   },
   "include": ["src", "../extension/src/shared"]
 }

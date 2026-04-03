@@ -2,14 +2,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createConnection } from "net";
 import { z } from "zod";
-import type { HostMessage, ModuleId, Finding } from "../../extension/src/shared/types";
+import type { HostMessage, ModuleId } from "../../extension/src/shared/types";
 
 const IPC_PATH = process.platform === "win32"
   ? "\\\\.\\pipe\\gaze-mcp"
   : "/tmp/gaze-mcp.sock";
 
 const TERMINAL_TYPES = new Set([
-  "PONG", "SCAN_RESULT", "SCAN_ERROR", "ACTIVE_TAB_RESULT", "ACTIVE_TAB_ERROR",
+  "PONG", "OBSERVE_RESULT", "OBSERVE_ERROR", "ACTIVE_TAB_RESULT", "ACTIVE_TAB_ERROR",
 ]);
 
 function sendToHost(message: HostMessage, timeoutMs = 120_000): Promise<HostMessage> {
@@ -55,94 +55,45 @@ function sendToHost(message: HostMessage, timeoutMs = 120_000): Promise<HostMess
   });
 }
 
-// Trim findings to fit within Claude's 1MB tool result limit
-function formatFindings(findings: Finding[], url: string, duration: number): string {
-  const summary = {
-    critical: findings.filter(f => f.severity === "critical").length,
-    high: findings.filter(f => f.severity === "high").length,
-    medium: findings.filter(f => f.severity === "medium").length,
-    low: findings.filter(f => f.severity === "low").length,
-    info: findings.filter(f => f.severity === "info").length,
-    total: findings.length,
-  };
+async function observe(
+  tabId: number,
+  url: string,
+  module: ModuleId,
+  options?: Record<string, unknown>
+): Promise<string> {
+  const message: HostMessage = options !== undefined
+    ? { type: "OBSERVE_REQUEST", id: `obs-${Date.now()}`, tabId, url, module, options }
+    : { type: "OBSERVE_REQUEST", id: `obs-${Date.now()}`, tabId, url, module };
 
-  // Strip large evidence content, keep structure
-  const trimmed = findings.map(f => ({
-    id: f.id,
-    title: f.title,
-    severity: f.severity,
-    category: f.category,
-    description: f.description,
-    remediations: f.remediations,
-    status: f.status,
-    url: f.url,
-    // Truncate evidence content to 500 chars each
-    evidence: f.evidence.map(e => ({
-      type: e.type,
-      label: e.label,
-      content: e.content.slice(0, 500) + (e.content.length > 500 ? "…[truncated]" : ""),
-    })),
-  }));
+  const response = await sendToHost(message);
 
-  const result = { url, duration, summary, findings: trimmed };
-  const json = JSON.stringify(result, null, 2);
-
-  // If still too large, return summary only with top findings
-  if (json.length > 800_000) {
-    const topFindings = trimmed
-      .sort((a, b) => {
-        const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-        return order[a.severity] - order[b.severity];
-      })
-      .slice(0, 20)
-      .map(f => ({
-        title: f.title,
-        severity: f.severity,
-        category: f.category,
-        description: f.description.slice(0, 200),
-        remediations: f.remediations.slice(0, 2),
-      }));
-
-    return JSON.stringify({
-      url,
-      duration,
-      summary,
-      note: `Showing top 20 of ${findings.length} findings. Ask for specific categories for more detail.`,
-      findings: topFindings,
-    }, null, 2);
+  if (response.type === "OBSERVE_ERROR") {
+    return `Error in ${module}: ${response.error}`;
   }
 
-  return json;
+  if (response.type === "OBSERVE_RESULT") {
+    return JSON.stringify(response.observation.data, null, 2);
+  }
+
+  return `Unexpected response: ${response.type}`;
 }
 
-const server = new McpServer({ name: "gaze", version: "0.1.0" });
+const server = new McpServer({ name: "gaze", version: "0.2.0" });
 
 server.tool("ping", "Check if Gaze host is running.", {}, async () => {
   try {
     const r = await sendToHost({ type: "PING", id: `ping-${Date.now()}` }, 5_000);
-    return {
-      content: [{
-        type: "text",
-        text: r.type === "PONG"
-          ? "Gaze host is running and extension is connected."
-          : `Unexpected: ${JSON.stringify(r)}`,
-      }],
-    };
+    return { content: [{ type: "text", text: r.type === "PONG" ? "Gaze is running." : `Unexpected: ${r.type}` }] };
   } catch (err) {
     return { content: [{ type: "text", text: `Host unreachable: ${err}` }] };
   }
 });
 
-server.tool("get_active_tab", "Get the currently active Chrome tab.", {}, async () => {
+server.tool("get_active_tab", "Get the currently active Chrome tab ID and URL.", {}, async () => {
   try {
     const r = await sendToHost({ type: "GET_ACTIVE_TAB", id: `tab-${Date.now()}` }, 5_000);
     if (r.type === "ACTIVE_TAB_RESULT") {
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({ tabId: r.tabId, url: r.url, title: r.title }, null, 2),
-        }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify({ tabId: r.tabId, url: r.url, title: r.title }, null, 2) }] };
     }
     return { content: [{ type: "text", text: `Error: ${JSON.stringify(r)}` }] };
   } catch (err) {
@@ -150,51 +101,43 @@ server.tool("get_active_tab", "Get the currently active Chrome tab.", {}, async 
   }
 });
 
-server.tool(
-  "scan",
-  "Run a security scan on a Chrome tab. Call get_active_tab first to get the tab ID.",
-  {
-    tabId: z.number().describe("Chrome tab ID to scan"),
-    url: z.string().describe("URL of the page being scanned"),
-    modules: z.array(z.enum([
-      "storage", "dom", "network", "fingerprint", "prototype", "memory"
-    ])).optional().describe("Modules to run. Defaults to all except memory."),
-  },
-  async ({ tabId, url, modules }) => {
-    const selectedModules: ModuleId[] = (modules as ModuleId[]) ?? [
-      "storage", "dom", "network", "fingerprint", "prototype",
-    ];
+const tabUrlParams = {
+  tabId: z.number().describe("Chrome tab ID"),
+  url: z.string().describe("URL of the page"),
+};
 
-    try {
-      const r = await sendToHost({
-        type: "SCAN_REQUEST",
-        id: `scan-${Date.now()}`,
-        tabId,
-        url,
-        modules: selectedModules,
-      }, 120_000);
+server.tool("observe_url", "Observe the URL structure — protocol, hostname, path, query parameters, fragment.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "url") }] }));
 
-      if (r.type === "SCAN_ERROR") {
-        return { content: [{ type: "text", text: `Scan failed: ${r.error}` }] };
-      }
+server.tool("observe_headers", "Observe HTTP request and response headers — security headers, CORS, server disclosure.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "headers") }] }));
 
-      if (r.type === "SCAN_RESULT") {
-        return {
-          content: [{
-            type: "text",
-            text: formatFindings(r.findings, url, r.duration),
-          }],
-        };
-      }
+server.tool("observe_dom", "Observe the DOM — forms, iframes, inline handlers, script tags, HTML comments, meta tags.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "dom") }] }));
 
-      return {
-        content: [{ type: "text", text: `Unexpected response: ${JSON.stringify(r)}` }],
-      };
-    } catch (err) {
-      return { content: [{ type: "text", text: `Scan failed: ${err}` }] };
-    }
-  }
-);
+server.tool("observe_scripts", "Observe the JS runtime — non-native window properties, source maps, service workers, eval usage.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "scripts") }] }));
+
+server.tool("observe_storage", "Observe all storage — cookies (domain-scoped), localStorage, sessionStorage, IndexedDB, Cache API.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "storage") }] }));
+
+server.tool("observe_network", "Observe network requests over a time window.",
+  { ...tabUrlParams, durationMs: z.number().optional().describe("Observation window in ms. Default 5000.") },
+  async ({ tabId, url, durationMs }) => ({
+    content: [{ type: "text", text: await observe(tabId, url, "network", durationMs !== undefined ? { durationMs } : undefined) }]
+  }));
+
+server.tool("observe_memory", "Observe the JS heap — string values present in memory. Use selectively.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "memory") }] }));
+
+server.tool("observe_prototype", "Observe prototype chains — Object.prototype, Array.prototype, Function.prototype and non-spec additions.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "prototype") }] }));
+
+server.tool("observe_csp", "Observe Content Security Policy — raw header, parsed directives, report endpoints.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "csp") }] }));
+
+server.tool("observe_fingerprint", "Observe framework and library signals — JS globals, script URLs, HTML signatures, meta tags.", tabUrlParams,
+  async ({ tabId, url }) => ({ content: [{ type: "text", text: await observe(tabId, url, "fingerprint") }] }));
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

@@ -14,17 +14,13 @@ process.stdin.on("end", () => process.exit(0));
 const pendingRequests = new Map<string, Socket>();
 let extensionSocket: WebSocket | null = null;
 
-// ─── Terminal message types — these close the request ─────────────────────────
-
 const TERMINAL_TYPES = new Set([
   "PONG",
-  "SCAN_RESULT",
-  "SCAN_ERROR",
+  "OBSERVE_RESULT",
+  "OBSERVE_ERROR",
   "ACTIVE_TAB_RESULT",
   "ACTIVE_TAB_ERROR",
 ]);
-
-// ─── WebSocket Server (Extension ↔ Host) ─────────────────────────────────────
 
 const wss = new WebSocketServer({ port: WS_PORT });
 
@@ -51,11 +47,8 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      if (!socket.destroyed) {
-        socket.write(JSON.stringify(message));
-      }
+      if (!socket.destroyed) socket.write(JSON.stringify(message));
 
-      // Only close the socket on terminal messages
       if (TERMINAL_TYPES.has(type)) {
         socket.end();
         pendingRequests.delete(message.id);
@@ -65,17 +58,9 @@ wss.on("connection", (ws) => {
     }
   });
 
-  ws.on("close", () => {
-    console.error("[Host] Extension disconnected");
-    extensionSocket = null;
-  });
-
-  ws.on("error", (err) => {
-    console.error("[Host] WS error:", err.message);
-  });
+  ws.on("close", () => { console.error("[Host] Extension disconnected"); extensionSocket = null; });
+  ws.on("error", (err) => console.error("[Host] WS error:", err.message));
 });
-
-// ─── IPC Server (MCP ↔ Host) ──────────────────────────────────────────────────
 
 const ipcServer = createServer((socket) => {
   let buffer = "";
@@ -96,9 +81,10 @@ const ipcServer = createServer((socket) => {
 
       if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
         socket.write(JSON.stringify({
-          type: "SCAN_ERROR",
+          type: "OBSERVE_ERROR",
           id: message.id,
-          error: "Extension not connected.",
+          module: "url",
+          error: "Extension not connected. Make sure Gaze is loaded in Chrome.",
         }));
         socket.end();
         return;
@@ -106,7 +92,6 @@ const ipcServer = createServer((socket) => {
 
       pendingRequests.set(message.id, socket);
       extensionSocket.send(JSON.stringify(message));
-
       socket.on("close", () => pendingRequests.delete(message.id));
 
     } catch {
@@ -114,9 +99,7 @@ const ipcServer = createServer((socket) => {
     }
   });
 
-  socket.on("error", (err) => {
-    console.error("[Host] IPC socket error:", err.message);
-  });
+  socket.on("error", (err) => console.error("[Host] IPC error:", err.message));
 });
 
 ipcServer.on("error", (err: NodeJS.ErrnoException) => {
